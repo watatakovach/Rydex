@@ -1,0 +1,25 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+backend/.env
+backend/rydex.db
+
+# Flutter
+**/.dart_tool/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+
+# VS Code
+.vscode/
+
+# Android
+**/android/.gradle/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
