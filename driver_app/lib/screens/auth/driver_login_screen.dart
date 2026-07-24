@@ -1,48 +1,41 @@
 import 'package:flutter/material.dart';
 
-import '../core/services/api_service.dart';
-import 'driver_home_screen.dart';
+import '../../core/services/api_service.dart';
+import '../home/driver_home_screen.dart';
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({
+class DriverLoginScreen extends StatefulWidget {
+  const DriverLoginScreen({
     super.key,
   });
 
   @override
-  State<LoginScreen> createState() =>
-      _LoginScreenState();
+  State<DriverLoginScreen> createState() =>
+      _DriverLoginScreenState();
 }
 
-class _LoginScreenState
-    extends State<LoginScreen> {
-  final _formKey =
-      GlobalKey<FormState>();
+class _DriverLoginScreenState
+    extends State<DriverLoginScreen> {
+  final _formKey = GlobalKey<FormState>();
 
-  final _emailController =
+  final _usernameController =
       TextEditingController();
 
   final _passwordController =
       TextEditingController();
 
   bool _isLoading = false;
-
   bool _obscurePassword = true;
 
   @override
   void dispose() {
-    _emailController.dispose();
+    _usernameController.dispose();
     _passwordController.dispose();
 
     super.dispose();
   }
 
-  // ============================================================
-  // LOGIN
-  // ============================================================
-
   Future<void> _login() async {
-    if (!_formKey.currentState!
-        .validate()) {
+    if (!_formKey.currentState!.validate()) {
       return;
     }
 
@@ -51,9 +44,9 @@ class _LoginScreenState
     });
 
     try {
-      await ApiService.loginUser(
-        email:
-            _emailController.text.trim(),
+      await ApiService.loginDriver(
+        username:
+            _usernameController.text.trim(),
         password:
             _passwordController.text,
       );
@@ -75,9 +68,9 @@ class _LoginScreenState
         SnackBar(
           content: Text(
             e.toString().replaceFirst(
-                  "Exception: ",
-                  "",
-                ),
+              'Exception: ',
+              '',
+            ),
           ),
         ),
       );
@@ -89,10 +82,6 @@ class _LoginScreenState
       }
     }
   }
-
-  // ============================================================
-  // BUILD
-  // ============================================================
 
   @override
   Widget build(
@@ -107,8 +96,9 @@ class _LoginScreenState
             child: Form(
               key: _formKey,
               child: Column(
+                crossAxisAlignment:
+                    CrossAxisAlignment.stretch,
                 children: [
-                  // LOGO
                   const Icon(
                     Icons.local_taxi,
                     size: 80,
@@ -119,7 +109,9 @@ class _LoginScreenState
                   ),
 
                   const Text(
-                    "RydeX Driver",
+                    'RydeX Driver',
+                    textAlign:
+                        TextAlign.center,
                     style: TextStyle(
                       fontSize: 30,
                       fontWeight:
@@ -131,9 +123,13 @@ class _LoginScreenState
                     height: 8,
                   ),
 
-                  const Text(
-                    "Drive with RydeX",
+                  Text(
+                    'Sign in to start driving',
+                    textAlign:
+                        TextAlign.center,
                     style: TextStyle(
+                      color:
+                          Colors.grey[600],
                       fontSize: 16,
                     ),
                   ),
@@ -142,26 +138,24 @@ class _LoginScreenState
                     height: 40,
                   ),
 
-                  // EMAIL
                   TextFormField(
                     controller:
-                        _emailController,
+                        _usernameController,
                     keyboardType:
-                        TextInputType
-                            .emailAddress,
+                        TextInputType.text,
                     decoration:
                         const InputDecoration(
-                      labelText: "Email",
+                      labelText:
+                          'Email or phone number',
                       prefixIcon:
-                          Icon(Icons.email),
+                          Icon(Icons.person),
                       border:
                           OutlineInputBorder(),
                     ),
                     validator: (value) {
                       if (value == null ||
-                          value.trim()
-                              .isEmpty) {
-                        return "Enter your email";
+                          value.trim().isEmpty) {
+                        return 'Enter your email or phone number';
                       }
 
                       return null;
@@ -172,7 +166,6 @@ class _LoginScreenState
                     height: 16,
                   ),
 
-                  // PASSWORD
                   TextFormField(
                     controller:
                         _passwordController,
@@ -180,12 +173,13 @@ class _LoginScreenState
                         _obscurePassword,
                     decoration:
                         InputDecoration(
-                      labelText:
-                          "Password",
+                      labelText: 'Password',
                       prefixIcon:
                           const Icon(
                         Icons.lock,
                       ),
+                      border:
+                          const OutlineInputBorder(),
                       suffixIcon:
                           IconButton(
                         onPressed: () {
@@ -202,13 +196,11 @@ class _LoginScreenState
                                   .visibility_off,
                         ),
                       ),
-                      border:
-                          const OutlineInputBorder(),
                     ),
                     validator: (value) {
                       if (value == null ||
                           value.isEmpty) {
-                        return "Enter your password";
+                        return 'Enter your password';
                       }
 
                       return null;
@@ -219,10 +211,7 @@ class _LoginScreenState
                     height: 24,
                   ),
 
-                  // LOGIN BUTTON
                   SizedBox(
-                    width:
-                        double.infinity,
                     height: 52,
                     child:
                         ElevatedButton(
@@ -230,20 +219,18 @@ class _LoginScreenState
                           _isLoading
                               ? null
                               : _login,
-                      child:
-                          _isLoading
-                              ? const SizedBox(
-                                  width: 24,
-                                  height: 24,
-                                  child:
-                                      CircularProgressIndicator(
-                                    strokeWidth:
-                                        2,
-                                  ),
-                                )
-                              : const Text(
-                                  "LOGIN",
-                                ),
+                      child: _isLoading
+                          ? const SizedBox(
+                              height: 24,
+                              width: 24,
+                              child:
+                                  CircularProgressIndicator(
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Text(
+                              'LOGIN',
+                            ),
                     ),
                   ),
                 ],
