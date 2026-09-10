@@ -22,4 +22,12 @@ backend/rydex.db
 .DS_Store
 
 # Windows
-Thumbs.db
+Thumbs.db__pycache__/
+*.pyc
+*.zip
+*.exe
+.venv/
+venv/
+.env
+.env.*
+!.env.example
