@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer
 
-from app.database.connection import Base
+from app.database.database import Base
 
 
 class DriverLocation(Base):

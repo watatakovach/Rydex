@@ -1,11 +1,13 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
 import '../../models/driver.dart';
+import '../../models/driver_profile.dart';
 import '../../models/ride.dart';
-import 'auth_service.dart';
 
+import 'auth_service.dart';
 class ApiService {
   // ============================================================
   // BASE URL
@@ -18,7 +20,7 @@ class ApiService {
   // Replace with your computer's local network IP.
   // Example:
   // http://192.168.1.100:8000
-  //
+  
   // Flutter Web on same computer:
   // http://127.0.0.1:8000
 
@@ -26,7 +28,10 @@ class ApiService {
       // 'http://10.0.2.2:8000';
 
   static const String baseUrl =
-    'http://192.168.2.104:8000';
+    // 'http://127.0.0.1:8000';
+  // 'http://192.168.1.100:8000';
+  'http://192.168.2.105:8000';
+
 
   // ============================================================
   // GET AUTH TOKEN
@@ -172,53 +177,38 @@ class ApiService {
     );
   }
 
+  // ===========================================================
   // ============================================================
-  // GET MY DRIVER PROFILE
-  //
-  // Backend:
-  // GET /drivers/me
-  // ============================================================
+// ============================================================
+// GET DRIVER PROFILE
+//
+// Backend:
+// GET /drivers/me
+// ============================================================
 
-  static Future<Driver>
-      getMyDriverProfile() async {
-    final headers =
-        await _authHeaders();
+static Future<DriverProfile> getDriverProfile() async {
+  final headers = await _authHeaders();
 
-    final response =
-        await http.get(
-      Uri.parse(
-        '$baseUrl/drivers/me',
-      ),
-      headers: headers,
-    );
+  final response = await http.get(
+    Uri.parse(
+      '$baseUrl/drivers/profile',
+    ),
+    headers: headers,
+  );
 
-    final data =
-        _decodeResponse(response);
+  final data = _decodeResponse(response);
 
-    if (response.statusCode != 200) {
-      throw Exception(
-        data['detail'] ??
-            'Failed to load driver profile',
-      );
-    }
-
-    return Driver.fromJson(
-      data,
+  if (response.statusCode != 200) {
+    throw Exception(
+      data['detail'] ??
+          'Failed to load driver profile',
     );
   }
 
-  // ============================================================
-  // UPDATE DRIVER ONLINE / OFFLINE STATUS
-  //
-  // Backend:
-  // PATCH /drivers/status
-  //
-  // Body:
-  // {
-  //   "is_online": true
-  // }
-  // ============================================================
-
+  return DriverProfile.fromJson(data);
+}
+ 
+ 
   static Future<Driver>
       updateDriverStatus({
     required bool isOnline,
@@ -251,6 +241,159 @@ class ApiService {
       data,
     );
   }
+
+// ============================================================
+// UPLOAD DRIVER PROFILE PHOTO
+//
+// Backend:
+// POST /drivers/profile/photo
+// ============================================================
+
+static Future<String> uploadProfilePhoto(
+  File file,
+) async {
+  final token = await _getToken();
+
+  final request = http.MultipartRequest(
+    'POST',
+    Uri.parse(
+      '$baseUrl/drivers/profile/photo',
+    ),
+  );
+
+  request.headers['Authorization'] =
+      'Bearer $token';
+
+  request.files.add(
+    await http.MultipartFile.fromPath(
+      'file',
+      file.path,
+    ),
+  );
+
+  final streamedResponse =
+      await request.send();
+
+  final response =
+      await http.Response.fromStream(
+    streamedResponse,
+  );
+
+  final data =
+      _decodeResponse(response);
+
+  if (response.statusCode != 200) {
+    throw Exception(
+      data['detail'] ??
+          'Failed to upload profile photo',
+    );
+  }
+
+  return data['profile_photo'];
+}
+
+
+// ============================================================
+// UPLOAD VEHICLE PHOTO
+//
+// Backend:
+// POST /drivers/vehicle/photo
+// ============================================================
+
+static Future<String> uploadVehiclePhoto(
+  File file,
+) async {
+  final token = await _getToken();
+
+  final request = http.MultipartRequest(
+    'POST',
+    Uri.parse(
+      '$baseUrl/drivers/vehicle/photo',
+    ),
+  );
+
+  request.headers['Authorization'] =
+      'Bearer $token';
+
+  request.files.add(
+    await http.MultipartFile.fromPath(
+      'file',
+      file.path,
+    ),
+  );
+
+  final streamedResponse =
+      await request.send();
+
+  final response =
+      await http.Response.fromStream(
+    streamedResponse,
+  );
+
+  final data =
+      _decodeResponse(response);
+
+  if (response.statusCode != 200) {
+    throw Exception(
+      data['detail'] ??
+          'Failed to upload vehicle photo',
+    );
+  }
+
+  return data['vehicle_photo'];
+}
+
+
+// ============================================================
+// UPDATE DRIVER VEHICLE DETAILS
+//
+// Backend:
+// PATCH /drivers/me
+// ============================================================
+
+static Future<DriverProfile>
+    updateDriverProfile({
+  String? vehicleMake,
+  String? vehicleModel,
+  String? vehicleColor,
+  String? vehiclePlate,
+}) async {
+  final headers =
+      await _jsonAuthHeaders();
+
+  final response =
+      await http.patch(
+    Uri.parse(
+      '$baseUrl/drivers/profile',
+    ),
+    headers: headers,
+    body: jsonEncode({
+      'vehicle_make':
+          vehicleMake,
+      'vehicle_model':
+          vehicleModel,
+      'vehicle_color':
+          vehicleColor,
+      'vehicle_plate':
+          vehiclePlate,
+    }),
+  );
+
+  final data =
+      _decodeResponse(response);
+
+  if (response.statusCode != 200) {
+    throw Exception(
+      data['detail'] ??
+          'Failed to update driver profile',
+    );
+  }
+
+  return DriverProfile.fromJson(
+    data,
+  );
+}
+
 
   // ============================================================
   // UPDATE DRIVER LOCATION

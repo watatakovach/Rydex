@@ -16,6 +16,9 @@ class Ride {
 
   final DateTime? requestedAt;
   final DateTime? completedAt;
+  final int? driverRating;
+  final String? driverRatingComment;
+  final bool hasDriverRating;
 
   const Ride({
     required this.id,
@@ -30,6 +33,9 @@ class Ride {
     this.finalFare,
     this.requestedAt,
     this.completedAt,
+    this.driverRating,
+    this.driverRatingComment,
+    this.hasDriverRating = false,
   });
 
   factory Ride.fromJson(
@@ -85,6 +91,13 @@ class Ride {
                   json['completed_at']
                       .toString(),
                 ),
+      driverRating: json['driver_rating'] == null
+          ? null
+          : _parseInt(json['driver_rating']),
+      driverRatingComment:
+          json['driver_rating_comment']?.toString(),
+      hasDriverRating:
+          json['has_driver_rating'] == true,
     );
   }
 
@@ -110,6 +123,10 @@ class Ride {
           requestedAt?.toIso8601String(),
       'completed_at':
           completedAt?.toIso8601String(),
+      'driver_rating': driverRating,
+      'driver_rating_comment':
+          driverRatingComment,
+      'has_driver_rating': hasDriverRating,
     };
   }
 

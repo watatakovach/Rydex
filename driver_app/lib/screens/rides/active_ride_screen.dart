@@ -3,89 +3,41 @@ import 'package:flutter/material.dart';
 import '../../core/services/api_service.dart';
 import '../../models/ride.dart';
 
-class ActiveRideScreen
-    extends StatefulWidget {
-  final Ride? ride;
+class ActiveRideScreen extends StatefulWidget {
+  final Ride ride;
 
-  const ActiveRideScreen({
-    super.key,
-    this.ride,
-  });
+  const ActiveRideScreen({super.key, required this.ride});
 
   @override
-  State<ActiveRideScreen> createState() =>
-      _ActiveRideScreenState();
+  State<ActiveRideScreen> createState() => _ActiveRideScreenState();
 }
 
-class _ActiveRideScreenState
-    extends State<ActiveRideScreen> {
-  Ride? _ride;
+class _ActiveRideScreenState extends State<ActiveRideScreen> {
+  late Ride _ride;
 
-  bool _isLoading = true;
   bool _isUpdating = false;
 
   @override
   void initState() {
     super.initState();
 
-    if (widget.ride != null) {
-      _ride = widget.ride;
-      _isLoading = false;
-    } else {
-      _loadCurrentRide();
-    }
-  }
-
-  // ============================================================
-  // LOAD CURRENT RIDE
-  // ============================================================
-
-  Future<void> _loadCurrentRide() async {
-    try {
-      final ride =
-          await ApiService.getDriverCurrentRide();
-
-      if (!mounted) return;
-
-      setState(() {
-        _ride = ride;
-        _isLoading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-      });
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        SnackBar(
-          content: Text(
-            'Failed to load active ride: $e',
-          ),
-        ),
-      );
-    }
+    _ride = widget.ride;
   }
 
   // ============================================================
   // UPDATE RIDE STATUS
   // ============================================================
 
-  Future<void> _updateRideStatus(
-    String newStatus,
-  ) async {
-    if (_ride == null) return;
+  Future<void> _updateStatus(String newStatus) async {
+    if (_isUpdating) return;
 
     setState(() {
       _isUpdating = true;
     });
 
     try {
-      final updatedRide =
-          await ApiService.updateRideStatus(
-        rideId: _ride!.id,
+      final updatedRide = await ApiService.updateRideStatus(
+        rideId: _ride.id,
         status: newStatus,
       );
 
@@ -96,27 +48,26 @@ class _ActiveRideScreenState
         _isUpdating = false;
       });
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        SnackBar(
-          content: Text(
-            'Ride status updated to $newStatus',
-          ),
-        ),
-      );
-
-      // Ride completed
       if (newStatus == 'completed') {
-        await Future.delayed(
-          const Duration(
-            milliseconds: 500,
-          ),
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ride completed successfully.')),
         );
+
+        await Future.delayed(const Duration(milliseconds: 800));
 
         if (!mounted) return;
 
-        Navigator.pop(context);
+        final navigator = Navigator.of(context);
+        navigator.pop();
+
+        return;
       }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Ride status updated to ${_formatStatus(newStatus)}.'),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
 
@@ -124,115 +75,196 @@ class _ActiveRideScreenState
         _isUpdating = false;
       });
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        SnackBar(
-          content: Text(
-            'Failed to update ride: $e',
-          ),
-        ),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
       );
     }
   }
 
   // ============================================================
-  // STATUS BUTTON
+  // GET NEXT STATUS
   // ============================================================
 
-  Widget _buildStatusButton() {
-    if (_ride == null) {
-      return const SizedBox.shrink();
-    }
-
-    switch (_ride!.status) {
+  String? _getNextStatus() {
+    switch (_ride.status) {
       case 'assigned':
-        return ElevatedButton.icon(
-          onPressed: _isUpdating
-              ? null
-              : () {
-                  _updateRideStatus(
-                    'accepted',
-                  );
-                },
-          icon: const Icon(
-            Icons.check_circle,
-          ),
-          label: const Text(
-            'ACCEPT RIDE',
-          ),
-        );
+        return 'accepted';
 
       case 'accepted':
-        return ElevatedButton.icon(
-          onPressed: _isUpdating
-              ? null
-              : () {
-                  _updateRideStatus(
-                    'driver_arriving',
-                  );
-                },
-          icon: const Icon(
-            Icons.navigation,
-          ),
-          label: const Text(
-            'I AM ON MY WAY',
-          ),
-        );
+        return 'driver_arriving';
 
       case 'driver_arriving':
-        return ElevatedButton.icon(
-          onPressed: _isUpdating
-              ? null
-              : () {
-                  _updateRideStatus(
-                    'driver_arrived',
-                  );
-                },
-          icon: const Icon(
-            Icons.location_on,
-          ),
-          label: const Text(
-            'I HAVE ARRIVED',
-          ),
-        );
+        return 'driver_arrived';
 
       case 'driver_arrived':
-        return ElevatedButton.icon(
-          onPressed: _isUpdating
-              ? null
-              : () {
-                  _updateRideStatus(
-                    'in_progress',
-                  );
-                },
-          icon: const Icon(
-            Icons.play_arrow,
-          ),
-          label: const Text(
-            'START RIDE',
-          ),
-        );
+        return 'in_progress';
 
       case 'in_progress':
-        return ElevatedButton.icon(
-          onPressed: _isUpdating
-              ? null
-              : () {
-                  _updateRideStatus(
-                    'completed',
-                  );
-                },
-          icon: const Icon(
-            Icons.check_circle,
-          ),
-          label: const Text(
-            'COMPLETE RIDE',
-          ),
-        );
+        return 'completed';
 
       default:
-        return const SizedBox.shrink();
+        return null;
     }
+  }
+
+  // ============================================================
+  // BUTTON LABEL
+  // ============================================================
+
+  String _getButtonLabel() {
+    switch (_ride.status) {
+      case 'assigned':
+        return 'ACCEPT RIDE';
+
+      case 'accepted':
+        return 'START DRIVING';
+
+      case 'driver_arriving':
+        return 'MARK ARRIVED';
+
+      case 'driver_arrived':
+        return 'START RIDE';
+
+      case 'in_progress':
+        return 'COMPLETE RIDE';
+
+      case 'completed':
+        return 'RIDE COMPLETED';
+
+      default:
+        return 'NO ACTION AVAILABLE';
+    }
+  }
+
+  // ============================================================
+  // STATUS DISPLAY
+  // ============================================================
+
+  String _formatStatus(String status) {
+    return status
+        .replaceAll('_', ' ')
+        .split(' ')
+        .map(
+          (word) => word.isEmpty
+              ? word
+              : '${word[0].toUpperCase()}${word.substring(1)}',
+        )
+        .join(' ');
+  }
+
+  // ============================================================
+  // STATUS DESCRIPTION
+  // ============================================================
+
+  String _getStatusDescription() {
+    switch (_ride.status) {
+      case 'assigned':
+        return 'This ride has been assigned to you.';
+
+      case 'accepted':
+        return 'You have accepted this ride. Start driving to the passenger.';
+
+      case 'driver_arriving':
+        return 'You are on your way to pick up the passenger.';
+
+      case 'driver_arrived':
+        return 'You have arrived at the pickup location.';
+
+      case 'in_progress':
+        return 'The passenger is currently in your vehicle.';
+
+      case 'completed':
+        return 'This ride has been completed.';
+
+      default:
+        return 'Current ride status: ${_formatStatus(_ride.status)}';
+    }
+  }
+
+  // ============================================================
+  // CONFIRM COMPLETION
+  // ============================================================
+
+  void _confirmCompletion() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Complete Ride?'),
+          content: const Text(
+            'Are you sure you have dropped off the passenger and want to complete this ride?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('CANCEL'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+
+                _updateStatus('completed');
+              },
+              child: const Text('COMPLETE'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ============================================================
+  // HANDLE NEXT ACTION
+  // ============================================================
+
+  void _handleNextAction() {
+    final nextStatus = _getNextStatus();
+
+    if (nextStatus == null) {
+      return;
+    }
+
+    if (nextStatus == 'completed') {
+      _confirmCompletion();
+
+      return;
+    }
+
+    _updateStatus(nextStatus);
+  }
+
+  // ============================================================
+  // CANCEL RIDE
+  // ============================================================
+
+  void _confirmCancelRide() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Cancel Ride?'),
+          content: const Text('Are you sure you want to cancel this ride?'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('NO'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+
+                _updateStatus('cancelled');
+              },
+              child: const Text('CANCEL RIDE'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   // ============================================================
@@ -240,475 +272,221 @@ class _ActiveRideScreenState
   // ============================================================
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
-    if (_isLoading) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text(
-            'Active Ride',
-          ),
-        ),
-        body: const Center(
-          child:
-              CircularProgressIndicator(),
-        ),
-      );
-    }
-
-    if (_ride == null) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text(
-            'Active Ride',
-          ),
-        ),
-        body: Center(
-          child: Padding(
-            padding:
-                const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize:
-                  MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons
-                      .directions_car_outlined,
-                  size: 70,
-                ),
-                const SizedBox(
-                  height: 16,
-                ),
-                const Text(
-                  'No active ride',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(
-                  height: 8,
-                ),
-                const Text(
-                  'You currently do not have an active ride.',
-                  textAlign:
-                      TextAlign.center,
-                ),
-                const SizedBox(
-                  height: 20,
-                ),
-                ElevatedButton(
-                  onPressed:
-                      _loadCurrentRide,
-                  child: const Text(
-                    'REFRESH',
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    final ride = _ride!;
-
-    final fare =
-        ride.estimatedFare == null
-            ? 'KES 0'
-            : 'KES ${ride.estimatedFare!.toStringAsFixed(0)}';
-
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Active Ride',
-        ),
-      ),
+      appBar: AppBar(title: const Text('Active Ride')),
 
       body: RefreshIndicator(
-        onRefresh:
-            _loadCurrentRide,
+        onRefresh: () async {
+          try {
+            final currentRide = await ApiService.getDriverCurrentRide();
 
-        child:
-            SingleChildScrollView(
-          physics:
-              const AlwaysScrollableScrollPhysics(),
+            if (!mounted) return;
 
-          padding:
-              const EdgeInsets.all(20),
+            if (currentRide != null) {
+              setState(() {
+                _ride = currentRide;
+              });
+            }
+          } catch (e) {
+            if (!mounted) return;
 
-          child: Column(
-            crossAxisAlignment:
-                CrossAxisAlignment
-                    .stretch,
+            ScaffoldMessenger.of(this.context).showSnackBar(
+              
+              SnackBar(
+                content: Text(e.toString().replaceFirst(
+                  'Exception: ',''
+                )),
+              ),
+            );
+          }
+        },
 
-            children: [
-              // ==================================================
-              // STATUS
-              // ==================================================
+        child: ListView(
+          padding: const EdgeInsets.all(20),
 
-              Card(
-                child: Padding(
-                  padding:
-                      const EdgeInsets.all(
-                    20,
-                  ),
+          children: [
+            // ==================================================
+            // STATUS CARD
+            // ==================================================
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
 
-                  child: Column(
-                    children: [
-                      Icon(
-                        Icons
-                            .directions_car,
-                        size: 60,
-                        color:
-                            Theme.of(
-                          context,
-                        )
-                                .colorScheme
-                                .primary,
+                child: Column(
+                  children: [
+                    Icon(_getStatusIcon(_ride.status), size: 64),
+
+                    const SizedBox(height: 16),
+
+                    Text(
+                      _formatStatus(_ride.status),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
                       ),
+                    ),
 
-                      const SizedBox(
-                        height: 12,
-                      ),
+                    const SizedBox(height: 10),
 
-                      const Text(
-                        'Current Ride',
-                        style:
-                            TextStyle(
-                          fontSize: 22,
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-
-                      const SizedBox(
-                        height: 12,
-                      ),
-
-                      Container(
-                        padding:
-                            const EdgeInsets
-                                .symmetric(
-                          horizontal: 18,
-                          vertical: 10,
-                        ),
-
-                        decoration:
-                            BoxDecoration(
-                          borderRadius:
-                              BorderRadius
-                                  .circular(
-                            20,
-                          ),
-
-                          color: Colors
-                              .green
-                              .withValues(
-                            alpha: 0.1,
-                          ),
-                        ),
-
-                        child: Text(
-                          ride.status
-                              .replaceAll(
-                            '_',
-                            ' ',
-                          )
-                              .toUpperCase(),
-
-                          style:
-                              const TextStyle(
-                            fontWeight:
-                                FontWeight
-                                    .bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                    Text(
+                      _getStatusDescription(),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[600], fontSize: 15),
+                    ),
+                  ],
                 ),
               ),
+            ),
 
-              const SizedBox(
-                height: 20,
+            const SizedBox(height: 20),
+
+            // ==================================================
+            // RIDE ID
+            // ==================================================
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.local_taxi),
+                title: const Text('Ride ID'),
+                subtitle: Text('#${_ride.id}'),
               ),
+            ),
 
-              // ==================================================
-              // RIDE ID
-              // ==================================================
+            const SizedBox(height: 12),
 
-              Card(
-                child: Padding(
-                  padding:
-                      const EdgeInsets.all(
-                    20,
-                  ),
-
-                  child: Row(
-                    mainAxisAlignment:
-                        MainAxisAlignment
-                            .spaceBetween,
-
-                    children: [
-                      const Text(
-                        'Ride ID',
-                      ),
-
-                      Text(
-                        '#${ride.id}',
-                        style:
-                            const TextStyle(
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
+            // ==================================================
+            // PICKUP
+            // ==================================================
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.radio_button_checked),
+                title: const Text('Pickup Location'),
+                subtitle: Text(
+                  '${_ride.pickupLatitude}, ${_ride.pickupLongitude}',
                 ),
               ),
+            ),
 
-              const SizedBox(
-                height: 20,
-              ),
+            const SizedBox(height: 12),
 
-              // ==================================================
-              // ROUTE
-              // ==================================================
-
-              Card(
-                child: Padding(
-                  padding:
-                      const EdgeInsets.all(
-                    20,
-                  ),
-
-                  child: Column(
-                    children: [
-                      Row(
-                        crossAxisAlignment:
-                            CrossAxisAlignment
-                                .start,
-
-                        children: [
-                          const Icon(
-                            Icons
-                                .my_location,
-                          ),
-
-                          const SizedBox(
-                            width: 12,
-                          ),
-
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment
-                                      .start,
-
-                              children: [
-                                const Text(
-                                  'Pickup',
-                                  style:
-                                      TextStyle(
-                                    color:
-                                        Colors
-                                            .grey,
-                                  ),
-                                ),
-
-                                const SizedBox(
-                                  height: 4,
-                                ),
-
-                                Text(
-                                  'Lat: ${ride.pickupLatitude}\nLng: ${ride.pickupLongitude}',
-
-                                  style:
-                                      const TextStyle(
-                                    fontWeight:
-                                        FontWeight
-                                            .w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const Padding(
-                        padding:
-                            EdgeInsets
-                                .symmetric(
-                          vertical: 16,
-                        ),
-                        child:
-                            Divider(),
-                      ),
-
-                      Row(
-                        crossAxisAlignment:
-                            CrossAxisAlignment
-                                .start,
-
-                        children: [
-                          const Icon(
-                            Icons
-                                .location_on,
-                          ),
-
-                          const SizedBox(
-                            width: 12,
-                          ),
-
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment
-                                      .start,
-
-                              children: [
-                                const Text(
-                                  'Destination',
-                                  style:
-                                      TextStyle(
-                                    color:
-                                        Colors
-                                            .grey,
-                                  ),
-                                ),
-
-                                const SizedBox(
-                                  height: 4,
-                                ),
-
-                                Text(
-                                  'Lat: ${ride.destinationLatitude}\nLng: ${ride.destinationLongitude}',
-
-                                  style:
-                                      const TextStyle(
-                                    fontWeight:
-                                        FontWeight
-                                            .w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+            // ==================================================
+            // DESTINATION
+            // ==================================================
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.location_on),
+                title: const Text('Destination'),
+                subtitle: Text(
+                  '${_ride.destinationLatitude}, ${_ride.destinationLongitude}',
                 ),
               ),
+            ),
 
-              const SizedBox(
-                height: 20,
-              ),
+            const SizedBox(height: 12),
 
-              // ==================================================
-              // FARE
-              // ==================================================
-
-              Card(
-                child: Padding(
-                  padding:
-                      const EdgeInsets.all(
-                    20,
-                  ),
-
-                  child: Row(
-                    mainAxisAlignment:
-                        MainAxisAlignment
-                            .spaceBetween,
-
-                    children: [
-                      const Text(
-                        'Estimated Fare',
-                        style:
-                            TextStyle(
-                          fontSize: 16,
-                        ),
-                      ),
-
-                      Text(
-                        fare,
-                        style:
-                            const TextStyle(
-                          fontSize: 20,
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
+            // ==================================================
+            // FARE
+            // ==================================================
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.account_balance_wallet),
+                title: const Text('Estimated Fare'),
+                subtitle: Text(
+                  'KES ${_ride.estimatedFare?.toStringAsFixed(0) ?? 'N/A'}',
                 ),
               ),
+            ),
 
-              const SizedBox(
-                height: 30,
-              ),
+            const SizedBox(height: 30),
 
-              // ==================================================
-              // STATUS ACTION
-              // ==================================================
-
+            // ==================================================
+            // NEXT ACTION
+            // ==================================================
+            if (_getNextStatus() != null)
               SizedBox(
-                height: 52,
+                height: 55,
 
-                child:
-                    _buildStatusButton(),
-              ),
+                child: ElevatedButton.icon(
+                  onPressed: _isUpdating ? null : _handleNextAction,
 
-              const SizedBox(
-                height: 12,
-              ),
+                  icon: _isUpdating
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          _ride.status == 'in_progress'
+                              ? Icons.check_circle
+                              : Icons.arrow_forward,
+                        ),
 
-              // ==================================================
-              // REPORT
-              // ==================================================
+                  label: Text(
+                    _isUpdating ? 'UPDATING...' : _getButtonLabel(),
 
-              OutlinedButton.icon(
-                onPressed:
-                    _isUpdating
-                        ? null
-                        : () {
-                            ScaffoldMessenger
-                                .of(
-                              context,
-                            ).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Problem reporting will be connected soon.',
-                                ),
-                              ),
-                            );
-                          },
-
-                icon: const Icon(
-                  Icons
-                      .report_problem_outlined,
-                ),
-
-                label: const Text(
-                  'REPORT A PROBLEM',
-                ),
-
-                style:
-                    OutlinedButton
-                        .styleFrom(
-                  padding:
-                      const EdgeInsets
-                          .all(16),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ),
-            ],
-          ),
+
+            const SizedBox(height: 12),
+
+            // ==================================================
+            // CANCEL
+            // ==================================================
+            if (_ride.status != 'completed' &&
+                _ride.status != 'cancelled' &&
+                _ride.status != 'in_progress')
+              SizedBox(
+                height: 55,
+
+                child: OutlinedButton.icon(
+                  onPressed: _isUpdating ? null : _confirmCancelRide,
+
+                  icon: const Icon(Icons.cancel_outlined),
+
+                  label: const Text('CANCEL RIDE'),
+                ),
+              ),
+          ],
         ),
       ),
     );
+  }
+
+  // ============================================================
+  // STATUS ICON
+  // ============================================================
+
+  IconData _getStatusIcon(String status) {
+    switch (status) {
+      case 'assigned':
+        return Icons.assignment;
+
+      case 'accepted':
+        return Icons.check_circle;
+
+      case 'driver_arriving':
+        return Icons.directions_car;
+
+      case 'driver_arrived':
+        return Icons.location_on;
+
+      case 'in_progress':
+        return Icons.navigation;
+
+      case 'completed':
+        return Icons.done_all;
+
+      case 'cancelled':
+        return Icons.cancel;
+
+      default:
+        return Icons.local_taxi;
+    }
   }
 }

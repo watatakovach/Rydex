@@ -1,17 +1,17 @@
+
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
-from app.database.connection import get_db
+from app.database.database import get_db
 from app.users.models import User
 from app.drivers.models import Driver
 from app.rides.models import Ride
 from app.rides.schemas import (
     RideRequest,
     RideResponse,
-    RideAcceptResponse,
     RideStatusUpdate,
 )
 from app.rides.fare import (
@@ -19,13 +19,92 @@ from app.rides.fare import (
     calculate_fare,
 )
 from app.rides.matching import find_nearest_driver
-from app.notifications.websocket_manager import manager
+from app.rides.notifications import notify_ride_event
+from app.payments.models import Payment
+from app.ratings.models import DriverRating
+from app.ratings.schemas import (
+    DriverRatingCreate,
+    DriverRatingResponse,
+)
 
 
 router = APIRouter(
     prefix="/rides",
     tags=["Rides"],
 )
+
+
+# ============================================================
+# RIDE STATUS CONSTANTS
+# ============================================================
+
+ACTIVE_RIDE_STATUSES = [
+    "assigned",
+    "accepted",
+    "driver_arriving",
+    "driver_arrived",
+    "in_progress",
+]
+
+PASSENGER_ACTIVE_STATUSES = [
+    "requested",
+    "assigned",
+    "accepted",
+    "driver_arriving",
+    "driver_arrived",
+    "in_progress",
+]
+
+COMPLETED_STATUSES = [
+    "completed",
+    "cancelled",
+]
+
+
+def attach_rating_fields(
+    ride: Ride,
+    db: Session,
+):
+    rating = (
+        db.query(DriverRating)
+        .filter(DriverRating.ride_id == ride.id)
+        .first()
+    )
+
+    ride.driver_rating = rating.rating if rating else None
+    ride.driver_rating_comment = rating.comment if rating else None
+    ride.has_driver_rating = rating is not None
+
+    return ride
+
+
+def attach_rating_fields_many(
+    rides: list[Ride],
+    db: Session,
+):
+    if not rides:
+        return rides
+
+    ride_ids = [ride.id for ride in rides]
+
+    ratings = (
+        db.query(DriverRating)
+        .filter(DriverRating.ride_id.in_(ride_ids))
+        .all()
+    )
+
+    ratings_by_ride_id = {
+        rating.ride_id: rating
+        for rating in ratings
+    }
+
+    for ride in rides:
+        rating = ratings_by_ride_id.get(ride.id)
+        ride.driver_rating = rating.rating if rating else None
+        ride.driver_rating_comment = rating.comment if rating else None
+        ride.has_driver_rating = rating is not None
+
+    return rides
 
 
 # ============================================================
@@ -48,6 +127,26 @@ async def request_ride(
             detail="Only passengers can request rides",
         )
 
+    # Prevent multiple active rides.
+    existing_active_ride = (
+        db.query(Ride)
+        .filter(
+            Ride.passenger_id == current_user.id,
+            Ride.status.in_(PASSENGER_ACTIVE_STATUSES),
+        )
+        .first()
+    )
+
+    if existing_active_ride:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "You already have an active ride. "
+                "Complete or cancel it before requesting another ride."
+            ),
+        )
+
+    # Calculate distance.
     distance_km = calculate_distance_km(
         ride_data.pickup_latitude,
         ride_data.pickup_longitude,
@@ -55,8 +154,13 @@ async def request_ride(
         ride_data.destination_longitude,
     )
 
-    estimated_fare = calculate_fare(distance_km)
+    # Calculate estimated fare.
+    estimated_fare = calculate_fare(
+        distance_km,
+        db,
+    )
 
+    # Find nearest available driver.
     nearest_driver, driver_distance = find_nearest_driver(
         db,
         ride_data.pickup_latitude,
@@ -82,37 +186,40 @@ async def request_ride(
 
         status=initial_status,
         estimated_fare=estimated_fare,
+        distance_km=distance_km,
     )
 
     db.add(new_ride)
     db.commit()
     db.refresh(new_ride)
 
+    # Notify assigned driver.
     if nearest_driver:
-        await manager.send_to_user(
+        await notify_ride_event(
             nearest_driver.user_id,
             {
                 "type": "new_ride_request",
                 "message": "You have a new ride request",
-                "ride_id": new_ride.id,
-                "driver_id": nearest_driver.id,
-
-                "pickup": {
-                    "latitude": new_ride.pickup_latitude,
-                    "longitude": new_ride.pickup_longitude,
+                "ride": {
+                    "id": new_ride.id,
+                    "passenger_id": new_ride.passenger_id,
+                    "driver_id": new_ride.driver_id,
+                    "status": new_ride.status,
+                    "pickup": {
+                        "latitude": new_ride.pickup_latitude,
+                        "longitude": new_ride.pickup_longitude,
+                    },
+                    "destination": {
+                        "latitude": new_ride.destination_latitude,
+                        "longitude": new_ride.destination_longitude,
+                    },
+                    "estimated_fare": new_ride.estimated_fare,
+                    "distance_km": new_ride.distance_km,
                 },
-
-                "destination": {
-                    "latitude": new_ride.destination_latitude,
-                    "longitude": new_ride.destination_longitude,
-                },
-
-                "estimated_fare": new_ride.estimated_fare,
-                "status": new_ride.status,
             },
         )
 
-    return new_ride
+    return attach_rating_fields(new_ride, db)
 
 
 # ============================================================
@@ -153,11 +260,38 @@ def get_available_rides(
             detail="Driver is offline",
         )
 
+    # Driver cannot accept another active ride.
+    active_ride = (
+        db.query(Ride)
+        .filter(
+            Ride.driver_id == driver.id,
+            Ride.status.in_(ACTIVE_RIDE_STATUSES),
+        )
+        .first()
+    )
+
+    if active_ride:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "You already have an active ride. "
+                "Complete or cancel your current ride "
+                "before accepting another ride."
+            ),
+        )
+
     rides = (
         db.query(Ride)
         .filter(
-            Ride.status == "requested",
-            Ride.driver_id.is_(None),
+            (
+                (Ride.status == "requested")
+                & (Ride.driver_id.is_(None))
+            )
+            |
+            (
+                (Ride.status == "assigned")
+                & (Ride.driver_id == driver.id)
+            )
         )
         .order_by(
             Ride.requested_at.desc()
@@ -165,7 +299,7 @@ def get_available_rides(
         .all()
     )
 
-    return rides
+    return attach_rating_fields_many(rides, db)
 
 
 # ============================================================
@@ -207,6 +341,22 @@ async def accept_ride(
             detail="Driver is offline",
         )
 
+    # Prevent multiple active rides.
+    active_ride = (
+        db.query(Ride)
+        .filter(
+            Ride.driver_id == driver.id,
+            Ride.status.in_(ACTIVE_RIDE_STATUSES),
+        )
+        .first()
+    )
+
+    if active_ride:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You already have an active ride",
+        )
+
     ride = (
         db.query(Ride)
         .filter(
@@ -221,37 +371,51 @@ async def accept_ride(
             detail="Ride not found",
         )
 
-    if ride.status != "requested":
+    # Assigned to another driver.
+    if (
+        ride.driver_id is not None
+        and ride.driver_id != driver.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This ride is assigned to another driver",
+        )
+
+    # Only requested or assigned rides can be accepted.
+    if ride.status not in [
+        "requested",
+        "assigned",
+    ]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ride is no longer available",
         )
 
-    if ride.driver_id is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ride has already been assigned",
-        )
-
     ride.driver_id = driver.id
     ride.status = "accepted"
+    ride.accepted_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(ride)
 
-    await manager.send_to_user(
+    # Notify passenger.
+    await notify_ride_event(
         ride.passenger_id,
         {
             "type": "ride_accepted",
             "message": "Your driver has accepted the ride",
-            "ride_id": ride.id,
-            "driver_id": driver.id,
+            "ride": {
+                "id": ride.id,
+                "passenger_id": ride.passenger_id,
+                "driver_id": ride.driver_id,
+                "status": ride.status,
+                "estimated_fare": ride.estimated_fare,
+            },
             "driver_user_id": driver.user_id,
-            "status": ride.status,
         },
     )
 
-    return ride
+    return attach_rating_fields(ride, db)
 
 
 # ============================================================
@@ -268,8 +432,6 @@ async def update_ride_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    new_status = status_data.status
-
     ride = (
         db.query(Ride)
         .filter(
@@ -284,72 +446,33 @@ async def update_ride_status(
             detail="Ride not found",
         )
 
-    # ========================================================
-    # PASSENGER CANCELLATION
-    # ========================================================
+    new_status = status_data.status.strip().lower()
 
-    if (
-        new_status == "cancelled"
-        and ride.passenger_id == current_user.id
-    ):
-        cancellable_statuses = [
-            "requested",
-            "assigned",
-            "accepted",
-            "driver_arriving",
-            "driver_arrived",
-        ]
+    allowed_statuses = {
+        "driver_arriving",
+        "driver_arrived",
+        "in_progress",
+        "completed",
+        "cancelled",
+    }
 
-        if ride.status not in cancellable_statuses:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Ride cannot be cancelled at this stage",
-            )
-
-        old_driver_id = ride.driver_id
-
-        driver_user_id = None
-
-        if old_driver_id is not None:
-            old_driver = (
-                db.query(Driver)
-                .filter(
-                    Driver.id == old_driver_id
-                )
-                .first()
-            )
-
-            if old_driver:
-                driver_user_id = old_driver.user_id
-
-        ride.status = "cancelled"
-        ride.driver_id = None
-
-        db.commit()
-        db.refresh(ride)
-
-        if driver_user_id is not None:
-            await manager.send_to_user(
-                driver_user_id,
-                {
-                    "type": "ride_cancelled",
-                    "message": "The passenger cancelled the ride",
-                    "ride_id": ride.id,
-                    "status": ride.status,
-                },
-            )
-
-        return ride
-
-    # ========================================================
-    # DRIVER STATUS UPDATE
-    # ========================================================
-
-    if ride.driver_id is None:
+    if new_status not in allowed_statuses:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ride has no assigned driver",
+            detail=(
+                "Invalid ride status. Allowed statuses: "
+                "driver_arriving, driver_arrived, "
+                "in_progress, completed, cancelled"
+            ),
         )
+
+    # ========================================================
+    # IDENTIFY USER
+    # ========================================================
+
+    is_passenger = (
+        ride.passenger_id == current_user.id
+    )
 
     driver = (
         db.query(Driver)
@@ -359,43 +482,126 @@ async def update_ride_status(
         .first()
     )
 
-    if not driver:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Driver profile not found",
-        )
+    is_driver = (
+        driver is not None
+        and ride.driver_id == driver.id
+    )
 
-    if driver.id != ride.driver_id:
+    if not is_passenger and not is_driver:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not the assigned driver",
+            detail="You are not authorized to update this ride",
         )
 
     # ========================================================
-    # VALID RIDE FLOW
+    # CANCELLATION
+    # ========================================================
+
+    if new_status == "cancelled":
+
+        if ride.status in [
+            "completed",
+            "cancelled",
+        ]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ride has already ended",
+            )
+
+        if ride.status == "in_progress":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ride cannot be cancelled after it has started",
+            )
+
+        ride.status = "cancelled"
+        ride.cancelled_at = datetime.now(timezone.utc)
+        ride.cancellation_reason = (
+            status_data.cancellation_reason
+        )
+        ride.cancelled_by = (
+            "passenger"
+            if is_passenger
+            else "driver"
+        )
+
+        db.commit()
+        db.refresh(ride)
+
+        # Notify driver.
+        if is_passenger and ride.driver_id:
+
+            driver_record = (
+                db.query(Driver)
+                .filter(
+                    Driver.id == ride.driver_id
+                )
+                .first()
+            )
+
+            if driver_record:
+                await notify_ride_event(
+                    driver_record.user_id,
+                    {
+                        "type": "ride_cancelled",
+                        "message": "The passenger cancelled the ride",
+                        "ride": {
+                            "id": ride.id,
+                            "passenger_id": ride.passenger_id,
+                            "driver_id": ride.driver_id,
+                            "status": ride.status,
+                            "cancellation_reason": (
+                                ride.cancellation_reason
+                            ),
+                        },
+                    },
+                )
+
+        # Notify passenger.
+        elif is_driver:
+            await notify_ride_event(
+                ride.passenger_id,
+                {
+                    "type": "ride_cancelled",
+                    "message": "The driver cancelled the ride",
+                    "ride": {
+                        "id": ride.id,
+                        "passenger_id": ride.passenger_id,
+                        "driver_id": ride.driver_id,
+                        "status": ride.status,
+                        "cancellation_reason": (
+                            ride.cancellation_reason
+                        ),
+                    },
+                },
+            )
+
+        return attach_rating_fields(ride, db)
+
+    # ========================================================
+    # ONLY DRIVER CAN ADVANCE RIDE
+    # ========================================================
+
+    if not is_driver:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the assigned driver can advance ride status",
+        )
+
+    # ========================================================
+    # VALID STATUS TRANSITIONS
     # ========================================================
 
     valid_transitions = {
-        "assigned": [
-            "accepted",
-            "cancelled",
-        ],
-
         "accepted": [
             "driver_arriving",
-            "cancelled",
         ],
-
         "driver_arriving": [
             "driver_arrived",
-            "cancelled",
         ],
-
         "driver_arrived": [
             "in_progress",
-            "cancelled",
         ],
-
         "in_progress": [
             "completed",
         ],
@@ -403,54 +609,143 @@ async def update_ride_status(
 
     current_status = ride.status
 
-    if current_status not in valid_transitions:
+    if (
+        current_status not in valid_transitions
+        or new_status not in valid_transitions[current_status]
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"Ride cannot be updated from "
-                f"status '{current_status}'"
+                f"Cannot change ride status from "
+                f"'{current_status}' to '{new_status}'"
             ),
         )
 
-    if new_status not in valid_transitions[current_status]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Cannot change ride from "
-                f"{current_status} to "
-                f"{new_status}"
-            ),
-        )
+    now = datetime.now(timezone.utc)
+
+    # ========================================================
+    # UPDATE STATUS
+    # ========================================================
 
     ride.status = new_status
 
-    if new_status == "completed":
-        ride.completed_at = datetime.now(
-            timezone.utc
-        )
-
-    if new_status == "completed":
-        # Keep driver_id so ride history can find it.
+    if new_status == "driver_arriving":
         pass
 
-    if new_status == "cancelled":
-        ride.driver_id = None
+    elif new_status == "driver_arrived":
+        pass
+
+    elif new_status == "in_progress":
+        ride.started_at = now
+
+    elif new_status == "completed":
+
+        ride.completed_at = now
+
+        # ----------------------------------------------------
+        # FINAL FARE
+        # ----------------------------------------------------
+
+        if ride.final_fare is None:
+            ride.final_fare = ride.estimated_fare
+
+        # ----------------------------------------------------
+        # RIDE DURATION
+        # ----------------------------------------------------
+
+        if ride.started_at:
+            duration_seconds = (
+                ride.completed_at - ride.started_at
+            ).total_seconds()
+
+            ride.duration_minutes = max(
+                0,
+                duration_seconds / 60,
+            )
+
+        # ----------------------------------------------------
+        # CREATE PAYMENT
+        # ----------------------------------------------------
+
+        existing_payment = (
+            db.query(Payment)
+            .filter(
+                Payment.ride_id == ride.id
+            )
+            .first()
+        )
+
+        if not existing_payment:
+
+            payment = Payment(
+                ride_id=ride.id,
+                passenger_id=ride.passenger_id,
+                driver_id=ride.driver_id,
+                amount=ride.final_fare or 0.0,
+                payment_method="cash",
+                status="pending",
+            )
+
+            db.add(payment)
+
+    # ========================================================
+    # SAVE CHANGES
+    # ========================================================
 
     db.commit()
     db.refresh(ride)
 
-    await manager.send_to_user(
+    # ========================================================
+    # NOTIFY PASSENGER
+    # ========================================================
+
+    messages = {
+        "driver_arriving": (
+            "Your driver is on the way"
+        ),
+        "driver_arrived": (
+            "Your driver has arrived"
+        ),
+        "in_progress": (
+            "Your ride has started"
+        ),
+        "completed": (
+            "Your ride has been completed"
+        ),
+    }
+
+    await notify_ride_event(
         ride.passenger_id,
         {
-            "type": "ride_status_update",
-            "message": "Your ride status has changed",
-            "ride_id": ride.id,
-            "status": ride.status,
-            "driver_id": driver.id,
+            "type": f"ride_{new_status}",
+            "message": messages.get(
+                new_status,
+                f"Ride status changed to {new_status}",
+            ),
+            "ride": {
+                "id": ride.id,
+                "passenger_id": ride.passenger_id,
+                "driver_id": ride.driver_id,
+                "status": ride.status,
+                "estimated_fare": ride.estimated_fare,
+                "final_fare": ride.final_fare,
+                "distance_km": ride.distance_km,
+                "duration_minutes": ride.duration_minutes,
+                "started_at": (
+                    ride.started_at.isoformat()
+                    if ride.started_at
+                    else None
+                ),
+                "completed_at": (
+                    ride.completed_at.isoformat()
+                    if ride.completed_at
+                    else None
+                ),
+            },
         },
     )
 
-    return ride
+    return attach_rating_fields(ride, db)
 
 
 # ============================================================
@@ -476,7 +771,7 @@ def get_my_rides(
         .all()
     )
 
-    return rides
+    return attach_rating_fields_many(rides, db)
 
 
 # ============================================================
@@ -491,20 +786,11 @@ def get_current_ride(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    active_statuses = [
-        "requested",
-        "assigned",
-        "accepted",
-        "driver_arriving",
-        "driver_arrived",
-        "in_progress",
-    ]
-
     ride = (
         db.query(Ride)
         .filter(
             Ride.passenger_id == current_user.id,
-            Ride.status.in_(active_statuses),
+            Ride.status.in_(PASSENGER_ACTIVE_STATUSES),
         )
         .order_by(
             Ride.requested_at.desc()
@@ -518,7 +804,7 @@ def get_current_ride(
             detail="No active ride found",
         )
 
-    return ride
+    return attach_rating_fields(ride, db)
 
 
 # ============================================================
@@ -547,19 +833,11 @@ def get_driver_current_ride(
             detail="Driver profile not found",
         )
 
-    active_statuses = [
-        "assigned",
-        "accepted",
-        "driver_arriving",
-        "driver_arrived",
-        "in_progress",
-    ]
-
     ride = (
         db.query(Ride)
         .filter(
             Ride.driver_id == driver.id,
-            Ride.status.in_(active_statuses),
+            Ride.status.in_(ACTIVE_RIDE_STATUSES),
         )
         .order_by(
             Ride.requested_at.desc()
@@ -573,7 +851,7 @@ def get_driver_current_ride(
             detail="No active ride found",
         )
 
-    return ride
+    return attach_rating_fields(ride, db)
 
 
 # ============================================================
@@ -606,10 +884,7 @@ def get_driver_history(
         db.query(Ride)
         .filter(
             Ride.driver_id == driver.id,
-            Ride.status.in_([
-                "completed",
-                "cancelled",
-            ]),
+            Ride.status.in_(COMPLETED_STATUSES),
         )
         .order_by(
             Ride.requested_at.desc()
@@ -617,4 +892,186 @@ def get_driver_history(
         .all()
     )
 
-    return rides
+    return attach_rating_fields_many(rides, db)
+
+
+# ============================================================
+# GET SINGLE RIDE
+# ============================================================
+
+@router.get(
+    "/{ride_id}",
+    response_model=RideResponse,
+)
+def get_ride(
+    ride_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ride = (
+        db.query(Ride)
+        .filter(
+            Ride.id == ride_id
+        )
+        .first()
+    )
+
+    if not ride:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ride not found",
+        )
+
+    is_passenger = (
+        ride.passenger_id == current_user.id
+    )
+
+    driver = (
+        db.query(Driver)
+        .filter(
+            Driver.user_id == current_user.id
+        )
+        .first()
+    )
+
+    is_driver = (
+        driver is not None
+        and ride.driver_id == driver.id
+    )
+
+    if not is_passenger and not is_driver:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to view this ride",
+        )
+
+    return attach_rating_fields(ride, db)
+
+
+# ============================================================
+# RATE COMPLETED RIDE DRIVER
+# ============================================================
+
+@router.post(
+    "/{ride_id}/rating",
+    response_model=DriverRatingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def rate_driver_for_ride(
+    ride_id: int,
+    rating_data: DriverRatingCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ride = (
+        db.query(Ride)
+        .filter(Ride.id == ride_id)
+        .first()
+    )
+
+    if not ride:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ride not found",
+        )
+
+    if ride.passenger_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the passenger who took this ride can rate the driver",
+        )
+
+    if ride.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only completed rides can be rated",
+        )
+
+    if ride.driver_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This ride has no assigned driver to rate",
+        )
+
+    existing_rating = (
+        db.query(DriverRating)
+        .filter(DriverRating.ride_id == ride.id)
+        .first()
+    )
+
+    if existing_rating:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This ride has already been rated",
+        )
+
+    comment = (
+        rating_data.comment.strip()
+        if rating_data.comment
+        else None
+    )
+
+    new_rating = DriverRating(
+        ride_id=ride.id,
+        passenger_id=current_user.id,
+        driver_id=ride.driver_id,
+        rating=rating_data.rating,
+        comment=comment or None,
+    )
+
+    db.add(new_rating)
+    db.commit()
+    db.refresh(new_rating)
+
+    return new_rating
+
+
+@router.get(
+    "/{ride_id}/rating",
+    response_model=DriverRatingResponse,
+)
+def get_ride_rating(
+    ride_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ride = (
+        db.query(Ride)
+        .filter(Ride.id == ride_id)
+        .first()
+    )
+
+    if not ride:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ride not found",
+        )
+
+    driver = (
+        db.query(Driver)
+        .filter(Driver.user_id == current_user.id)
+        .first()
+    )
+
+    is_passenger = ride.passenger_id == current_user.id
+    is_driver = driver is not None and ride.driver_id == driver.id
+
+    if not is_passenger and not is_driver:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to view this rating",
+        )
+
+    rating = (
+        db.query(DriverRating)
+        .filter(DriverRating.ride_id == ride.id)
+        .first()
+    )
+
+    if not rating:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rating not found",
+        )
+
+    return rating

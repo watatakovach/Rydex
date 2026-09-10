@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
-from app.database.connection import get_db
+from app.database.database import get_db
 from app.drivers.models import Driver
 from app.users.models import User
 from app.vehicles.models import Vehicle

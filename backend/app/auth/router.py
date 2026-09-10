@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from app.auth.dependencies import get_current_user
+# from app.auth.dependencies import get_current_user
 
 from app.auth.schemas import (
     TokenResponse,
@@ -13,7 +13,7 @@ from app.auth.security import (
     hash_password,
     verify_password,
 )
-from app.database.connection import get_db
+from app.database.database import get_db
 from app.users.models import User
 
 
@@ -145,18 +145,3 @@ def login_user(
 
 
 
-@router.patch("/make-admin")
-def make_current_user_admin(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    current_user.role = "admin"
-
-    db.commit()
-    db.refresh(current_user)
-
-    return {
-        "message": "User promoted to admin",
-        "user_id": current_user.id,
-        "role": current_user.role,
-    }

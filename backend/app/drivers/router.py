@@ -1,35 +1,167 @@
 from datetime import datetime, timezone
+import os
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
-from app.database.connection import get_db
-
+from app.database.database import get_db
 from app.users.models import User
-
 from app.drivers.models import Driver
 from app.drivers.schemas import (
     DriverRegister,
     DriverResponse,
     DriverStatusUpdate,
+    DriverProfileResponse,
+    DriverUpdate,
 )
-
 from app.drivers.location_models import DriverLocation
 from app.drivers.location_schemas import (
     DriverLocationUpdate,
     DriverLocationResponse,
 )
-
 from app.rides.models import Ride
-
+from app.ratings.models import DriverRating
 from app.notifications.websocket_manager import manager
+from sqlalchemy import func
+
+from app.ratings.schemas import (
+    DriverRatingCreate,
+    DriverRatingResponse,
+    DriverRatingsSummary,
+)
 
 
 router = APIRouter(
     prefix="/drivers",
     tags=["Drivers"],
 )
+
+
+
+# ============================================================
+# CONSTANTS
+# ============================================================
+
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+
+MAX_FILE_SIZE = 10 * 1024 * 1024
+
+UPLOAD_DIR = "app/uploads/drivers"
+DOCUMENT_UPLOAD_DIR = "app/uploads/drivers/documents"
+
+
+# ============================================================
+# HELPER - GET CURRENT DRIVER
+# ============================================================
+
+def _get_driver(
+    db: Session,
+    current_user: User,
+) -> Driver:
+    driver = (
+        db.query(Driver)
+        .filter(Driver.user_id == current_user.id)
+        .first()
+    )
+
+    if not driver:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Driver profile not found",
+        )
+
+    return driver
+
+
+def _get_rating_summary(
+    db: Session,
+    driver_id: int,
+) -> dict:
+    average_rating, rating_count = (
+        db.query(
+            func.avg(DriverRating.rating),
+            func.count(DriverRating.id),
+        )
+        .filter(DriverRating.driver_id == driver_id)
+        .first()
+    )
+
+    return {
+        "average_rating": (
+            round(float(average_rating), 2)
+            if average_rating is not None
+            else None
+        ),
+        "rating_count": int(rating_count or 0),
+    }
+
+
+# ============================================================
+# HELPER - SAVE IMAGE
+# ============================================================
+
+async def _save_image_file(
+    file: UploadFile,
+    upload_dir: str,
+    filename_prefix: str,
+) -> str:
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only JPG, PNG, and WEBP images are allowed",
+        )
+
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file",
+        )
+
+    if "." not in file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must have an extension",
+        )
+
+    extension = file.filename.rsplit(".", 1)[1].lower()
+
+    filename = f"{filename_prefix}_{uuid.uuid4()}.{extension}"
+
+    os.makedirs(upload_dir, exist_ok=True)
+
+    file_path = os.path.join(upload_dir, filename)
+
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty",
+        )
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size must not exceed 10 MB",
+        )
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(content)
+
+    return filename
 
 
 # ============================================================
@@ -46,15 +178,9 @@ def register_driver(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # --------------------------------------------------------
-    # Only passengers/users can register as drivers
-    # --------------------------------------------------------
-
     existing_driver = (
         db.query(Driver)
-        .filter(
-            Driver.user_id == current_user.id
-        )
+        .filter(Driver.user_id == current_user.id)
         .first()
     )
 
@@ -64,16 +190,9 @@ def register_driver(
             detail="You are already registered as a driver",
         )
 
-    # --------------------------------------------------------
-    # Check license number
-    # --------------------------------------------------------
-
     existing_license = (
         db.query(Driver)
-        .filter(
-            Driver.license_number
-            == driver_data.license_number
-        )
+        .filter(Driver.license_number == driver_data.license_number)
         .first()
     )
 
@@ -82,10 +201,6 @@ def register_driver(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="License number is already registered",
         )
-
-    # --------------------------------------------------------
-    # Create driver profile
-    # --------------------------------------------------------
 
     new_driver = Driver(
         user_id=current_user.id,
@@ -102,43 +217,86 @@ def register_driver(
 
 
 # ============================================================
-# GET MY DRIVER PROFILE
+# GET DRIVER PROFILE
 # ============================================================
 
 @router.get(
-    "/me",
-    response_model=DriverResponse,
+    "/profile",
+    response_model=DriverProfileResponse,
 )
-def get_my_driver_profile(
+def get_driver_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Get the driver profile belonging to the
-    currently authenticated user.
+    driver = _get_driver(db, current_user)
+    rating_summary = _get_rating_summary(db, driver.id)
 
-    IMPORTANT:
+    return {
+        "id": driver.id,
+        "user_id": driver.user_id,
+        "full_name": current_user.full_name,
+        "phone_number": current_user.phone_number,
+        "email": current_user.email,
+        "license_number": driver.license_number,
+        "vehicle_make": driver.vehicle_make,
+        "vehicle_model": driver.vehicle_model,
+        "vehicle_color": driver.vehicle_color,
+        "vehicle_plate": driver.vehicle_plate,
+        "profile_photo": driver.profile_photo,
+        "vehicle_photo": driver.vehicle_photo,
+        "driving_license_document": driver.driving_license_document,
+        "national_id_document": driver.national_id_document,
+        "vehicle_document": driver.vehicle_document,
+        "is_verified": driver.is_verified,
+        "is_online": driver.is_online,
+        **rating_summary,
+    }
 
-    current_user.id = User.id
 
-    driver.id = Driver.id
+# ============================================================
+# UPDATE DRIVER PROFILE
+# ============================================================
 
-    They are NOT the same ID.
-    """
+@router.patch(
+    "/profile",
+    response_model=DriverResponse,
+)
+def update_driver_profile(
+    profile_data: DriverUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    driver = _get_driver(db, current_user)
 
-    driver = (
-        db.query(Driver)
-        .filter(
-            Driver.user_id == current_user.id
+    if profile_data.vehicle_make is not None:
+        driver.vehicle_make = profile_data.vehicle_make
+
+    if profile_data.vehicle_model is not None:
+        driver.vehicle_model = profile_data.vehicle_model
+
+    if profile_data.vehicle_color is not None:
+        driver.vehicle_color = profile_data.vehicle_color
+
+    if profile_data.vehicle_plate is not None:
+        existing_vehicle = (
+            db.query(Driver)
+            .filter(
+                Driver.vehicle_plate == profile_data.vehicle_plate,
+                Driver.id != driver.id,
+            )
+            .first()
         )
-        .first()
-    )
 
-    if not driver:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Driver profile not found. Please register as a driver first.",
-        )
+        if existing_vehicle:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Vehicle plate is already registered",
+            )
+
+        driver.vehicle_plate = profile_data.vehicle_plate
+
+    db.commit()
+    db.refresh(driver)
 
     return driver
 
@@ -156,43 +314,36 @@ def update_driver_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # --------------------------------------------------------
-    # Find driver profile using User.id
-    # --------------------------------------------------------
+    driver = _get_driver(db, current_user)
 
-    driver = (
-        db.query(Driver)
+    if status_data.is_online and not driver.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Driver must be verified before going online",
+        )
+
+    active_statuses = [
+        "assigned",
+        "accepted",
+        "driver_arriving",
+        "driver_arrived",
+        "in_progress",
+    ]
+
+    active_ride = (
+        db.query(Ride)
         .filter(
-            Driver.user_id == current_user.id
+            Ride.driver_id == driver.id,
+            Ride.status.in_(active_statuses),
         )
         .first()
     )
 
-    if not driver:
+    if not status_data.is_online and active_ride:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Driver profile not found. Please register as a driver first.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot go offline while you have an active ride.",
         )
-
-    # --------------------------------------------------------
-    # Driver must be verified before going online
-    # --------------------------------------------------------
-
-    if (
-        status_data.is_online
-        and not driver.is_verified
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Driver must be verified "
-                "before going online"
-            ),
-        )
-
-    # --------------------------------------------------------
-    # Update online status
-    # --------------------------------------------------------
 
     driver.is_online = status_data.is_online
 
@@ -215,27 +366,7 @@ async def update_driver_location(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # --------------------------------------------------------
-    # Find Driver profile using User.id
-    # --------------------------------------------------------
-
-    driver = (
-        db.query(Driver)
-        .filter(
-            Driver.user_id == current_user.id
-        )
-        .first()
-    )
-
-    if not driver:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Driver profile not found. Please register as a driver first.",
-        )
-
-    # --------------------------------------------------------
-    # Driver must be verified
-    # --------------------------------------------------------
+    driver = _get_driver(db, current_user)
 
     if not driver.is_verified:
         raise HTTPException(
@@ -243,112 +374,294 @@ async def update_driver_location(
             detail="Driver is not verified",
         )
 
-    # --------------------------------------------------------
-    # Driver must be online
-    # --------------------------------------------------------
-
     if not driver.is_online:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Driver is offline",
         )
 
-    # --------------------------------------------------------
-    # Find existing location
-    #
-    # DriverLocation.driver_id = Driver.id
-    # NOT User.id
-    # --------------------------------------------------------
+    now = datetime.now(timezone.utc)
+
+    driver.latitude = location_data.latitude
+    driver.longitude = location_data.longitude
+    driver.location_updated_at = now
 
     location = (
         db.query(DriverLocation)
-        .filter(
-            DriverLocation.driver_id == driver.id
-        )
+        .filter(DriverLocation.driver_id == driver.id)
         .first()
     )
 
-    # --------------------------------------------------------
-    # Update existing location
-    # --------------------------------------------------------
-
     if location:
-
-        location.latitude = (
-            location_data.latitude
-        )
-
-        location.longitude = (
-            location_data.longitude
-        )
-
-        location.updated_at = (
-            datetime.now(timezone.utc)
-        )
-
-    # --------------------------------------------------------
-    # Create new location
-    # --------------------------------------------------------
-
+        location.latitude = location_data.latitude
+        location.longitude = location_data.longitude
+        location.updated_at = now
     else:
-
         location = DriverLocation(
             driver_id=driver.id,
             latitude=location_data.latitude,
             longitude=location_data.longitude,
         )
-
         db.add(location)
 
     db.commit()
     db.refresh(location)
 
-    # ========================================================
-    # FIND DRIVER'S ACTIVE RIDE
-    # ========================================================
+    active_statuses = [
+        "assigned",
+        "accepted",
+        "driver_arriving",
+        "driver_arrived",
+        "in_progress",
+    ]
 
     active_ride = (
         db.query(Ride)
         .filter(
             Ride.driver_id == driver.id,
-            Ride.status.in_(
-                [
-                    "assigned",
-                    "accepted",
-                    "driver_arriving",
-                    "driver_arrived",
-                    "in_progress",
-                ]
-            ),
+            Ride.status.in_(active_statuses),
         )
-        .order_by(
-            Ride.requested_at.desc()
-        )
+        .order_by(Ride.requested_at.desc())
         .first()
     )
 
-    # ========================================================
-    # SEND LOCATION TO PASSENGER
-    # ========================================================
-
     if active_ride:
-
         await manager.send_to_user(
             active_ride.passenger_id,
             {
                 "type": "driver_location_update",
-
                 "ride_id": active_ride.id,
-
                 "driver_id": driver.id,
-
-                "latitude": location.latitude,
-
-                "longitude": location.longitude,
+                "location": {
+                    "latitude": location.latitude,
+                    "longitude": location.longitude,
+                },
+                "timestamp": (
+                    location.updated_at.isoformat()
+                    if location.updated_at
+                    else now.isoformat()
+                ),
             },
         )
 
     return location
+
+
+# ============================================================
+# UPLOAD DRIVER PROFILE PHOTO
+# ============================================================
+
+@router.post("/profile/photo")
+async def upload_profile_photo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    driver = _get_driver(db, current_user)
+
+    filename = await _save_image_file(
+        file=file,
+        upload_dir=UPLOAD_DIR,
+        filename_prefix="profile",
+    )
+
+    profile_path = f"/uploads/drivers/{filename}"
+
+    driver.profile_photo = profile_path
+
+    db.commit()
+    db.refresh(driver)
+
+    return {
+        "message": "Profile photo uploaded successfully",
+        "profile_photo": profile_path,
+    }
+
+
+# ============================================================
+# UPLOAD VEHICLE PHOTO
+# ============================================================
+
+@router.post("/vehicle/photo")
+async def upload_vehicle_photo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    driver = _get_driver(db, current_user)
+
+    filename = await _save_image_file(
+        file=file,
+        upload_dir=UPLOAD_DIR,
+        filename_prefix="vehicle",
+    )
+
+    vehicle_path = f"/uploads/drivers/{filename}"
+
+    driver.vehicle_photo = vehicle_path
+
+    db.commit()
+    db.refresh(driver)
+
+    return {
+        "message": "Vehicle photo uploaded successfully",
+        "vehicle_photo": vehicle_path,
+    }
+
+
+# ============================================================
+# HELPER - SAVE VERIFICATION DOCUMENT
+# ============================================================
+
+async def _save_verification_document(
+    file: UploadFile,
+    document_type: str,
+    driver: Driver,
+    db: Session,
+) -> str:
+    allowed_documents = {
+        "license": "driving_license_document",
+        "national_id": "national_id_document",
+        "vehicle": "vehicle_document",
+    }
+
+    if document_type not in allowed_documents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid document type",
+        )
+
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only JPG, PNG, and WEBP images are allowed",
+        )
+
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file",
+        )
+
+    if "." not in file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must have an extension",
+        )
+
+    extension = file.filename.rsplit(".", 1)[1].lower()
+
+    filename = f"{document_type}_{uuid.uuid4()}.{extension}"
+
+    os.makedirs(DOCUMENT_UPLOAD_DIR, exist_ok=True)
+
+    file_path = os.path.join(DOCUMENT_UPLOAD_DIR, filename)
+
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty",
+        )
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size must not exceed 10 MB",
+        )
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(content)
+
+    document_path = f"/uploads/drivers/documents/{filename}"
+
+    column_name = allowed_documents[document_type]
+
+    setattr(driver, column_name, document_path)
+
+    db.commit()
+    db.refresh(driver)
+
+    return document_path
+
+
+# ============================================================
+# UPLOAD DRIVING LICENSE
+# ============================================================
+
+@router.post("/documents/license")
+async def upload_driving_license_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    driver = _get_driver(db, current_user)
+
+    document_path = await _save_verification_document(
+        file=file,
+        document_type="license",
+        driver=driver,
+        db=db,
+    )
+
+    return {
+        "message": "Driving license uploaded successfully",
+        "document_type": "license",
+        "driving_license_document": document_path,
+    }
+
+
+# ============================================================
+# UPLOAD NATIONAL ID
+# ============================================================
+
+@router.post("/documents/national-id")
+async def upload_national_id_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    driver = _get_driver(db, current_user)
+
+    document_path = await _save_verification_document(
+        file=file,
+        document_type="national_id",
+        driver=driver,
+        db=db,
+    )
+
+    return {
+        "message": "National ID uploaded successfully",
+        "document_type": "national_id",
+        "national_id_document": document_path,
+    }
+
+
+# ============================================================
+# UPLOAD VEHICLE DOCUMENT
+# ============================================================
+
+@router.post("/documents/vehicle")
+async def upload_vehicle_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    driver = _get_driver(db, current_user)
+
+    document_path = await _save_verification_document(
+        file=file,
+        document_type="vehicle",
+        driver=driver,
+        db=db,
+    )
+
+    return {
+        "message": "Vehicle document uploaded successfully",
+        "document_type": "vehicle",
+        "vehicle_document": document_path,
+    }
 
 
 # ============================================================
@@ -365,9 +678,7 @@ def get_driver_location(
 ):
     location = (
         db.query(DriverLocation)
-        .filter(
-            DriverLocation.driver_id == driver_id
-        )
+        .filter(DriverLocation.driver_id == driver_id)
         .first()
     )
 
@@ -378,3 +689,53 @@ def get_driver_location(
         )
 
     return location
+
+
+# ============================================================
+# GET DRIVER RATINGS
+# ============================================================
+
+@router.get(
+    "/drivers/me",
+    response_model=DriverRatingsSummary,
+)
+def my_driver_ratings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    driver = (
+        db.query(Driver)
+        .filter(Driver.user_id == current_user.id)
+        .first()
+    )
+
+    if not driver:
+        raise HTTPException(
+            status_code=404,
+            detail="Driver profile not found.",
+        )
+
+    ratings = (
+        db.query(DriverRating)
+        .filter(DriverRating.driver_id == driver.id)
+        .order_by(DriverRating.created_at.desc())
+        .all()
+    )
+
+    average = (
+        db.query(func.avg(DriverRating.rating))
+        .filter(DriverRating.driver_id == driver.id)
+        .scalar()
+    )
+
+    count = (
+        db.query(func.count(DriverRating.id))
+        .filter(DriverRating.driver_id == driver.id)
+        .scalar()
+    )
+
+    return {
+        "average_rating": round(float(average or 0), 2),
+        "rating_count": count,
+        "ratings": ratings,
+    }

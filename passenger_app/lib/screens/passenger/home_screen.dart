@@ -5,6 +5,7 @@ import '../../core/services/api_service.dart';
 import '../../widgets/map_widget.dart';
 import '../../widgets/destination_search.dart';
 import '../../models/place.dart';
+import 'trips_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -18,6 +19,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState
     extends State<HomeScreen> {
+  int _selectedIndex = 0;
 
   // ============================================================
   // MAP KEY
@@ -39,6 +41,9 @@ class _HomeScreenState
 
   LatLng? _selectedPickup;
 
+
+  LatLng? driverLocation;
+
   // ============================================================
   // LOADING STATES
   // ============================================================
@@ -55,6 +60,13 @@ class _HomeScreenState
   Widget build(
     BuildContext context,
   ) {
+    if (_selectedIndex == 1) {
+      return Scaffold(
+        body: const TripsScreen(),
+        bottomNavigationBar: _buildNavigationBar(),
+      );
+    }
+
     return Scaffold(
       extendBody: true,
 
@@ -536,8 +548,18 @@ class _HomeScreenState
       // ============================================================
 
       bottomNavigationBar:
-          NavigationBar(
-        selectedIndex: 0,
+          _buildNavigationBar(),
+    );
+  }
+
+  Widget _buildNavigationBar() {
+    return NavigationBar(
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: (index) {
+          setState(() {
+            _selectedIndex = index;
+          });
+        },
 
         destinations:
             const [
@@ -597,8 +619,7 @@ class _HomeScreenState
                 "Profile",
           ),
         ],
-      ),
-    );
+      );
   }
 
   // ============================================================

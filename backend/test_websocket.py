@@ -3,21 +3,31 @@ import websockets
 
 
 async def main():
-    uri = "ws://127.0.0.1:8000/ws/1"
+    user_id = int(input("Driver user ID: ").strip())
+    token = input("Driver JWT token: ").strip()
 
-    async with websockets.connect(uri) as websocket:
-        print("Connected to RYDEX")
+    url = (
+        f"ws://127.0.0.1:8000"
+        f"/notifications/ws/{user_id}"
+        f"?token={token}"
+    )
 
-        await websocket.send(
-            "Hello from RYDEX passenger"
-        )
+    print("\nConnecting...")
 
-        response = await websocket.recv()
+    try:
+        async with websockets.connect(url) as websocket:
+            print("✅ WebSocket connected!")
+            print("Waiting for RYDEX notifications...\n")
 
-        print(
-            "Server response:",
-            response,
-        )
+            while True:
+                message = await websocket.recv()
+                print("🔔 NOTIFICATION RECEIVED:")
+                print(message)
+                print()
+
+    except Exception as e:
+        print(f"❌ WebSocket error: {e}")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

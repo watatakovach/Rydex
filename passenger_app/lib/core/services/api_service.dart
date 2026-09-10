@@ -276,6 +276,39 @@ static Future<Map<String, dynamic>> cancelRide(
   }
 
   // ============================================================
+  // RATE DRIVER
+  // ============================================================
+
+  static Future<Map<String, dynamic>>
+      rateDriver({
+    required int rideId,
+    required int rating,
+    String? comment,
+  }) async {
+    final headers =
+        await authHeaders();
+
+    final response = await http.post(
+      Uri.parse("$baseUrl/rides/$rideId/rating"),
+      headers: headers,
+      body: jsonEncode({
+        "rating": rating,
+        "comment": comment,
+      }),
+    );
+
+    if (response.statusCode != 200 &&
+        response.statusCode != 201) {
+      throw Exception(
+        _getErrorMessage(response),
+      );
+    }
+
+    return jsonDecode(response.body)
+        as Map<String, dynamic>;
+  }
+
+  // ============================================================
   // ERROR HANDLING
   // ============================================================
 

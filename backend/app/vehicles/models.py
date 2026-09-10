@@ -1,6 +1,6 @@
 from sqlalchemy import Column, ForeignKey, Integer, String
 
-from app.database.connection import Base
+from app.database.database import Base
 
 
 class Vehicle(Base):

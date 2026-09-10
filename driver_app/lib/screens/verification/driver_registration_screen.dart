@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+
 import '../../core/services/api_service.dart';
-import '../home/driver_home_screen.dart';
+// import '../home/driver_home_screen.dart';
+import 'verification_screen.dart';
 
 class DriverRegistrationScreen extends StatefulWidget {
   const DriverRegistrationScreen({
@@ -58,7 +60,7 @@ class _DriverRegistrationScreenState
         context,
         MaterialPageRoute(
           builder: (_) =>
-              const DriverHomeScreen(),
+              const VerificationScreen(),
         ),
       );
     } catch (e) {

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
-from app.database.connection import get_db
+from app.database.database import get_db
 from app.users.models import User
 from app.drivers.models import Driver
 from app.rides.models import Ride
@@ -57,17 +57,20 @@ async def request_ride(
     # --------------------------------------------------------
 
     distance_km = calculate_distance_km(
-        ride_data.pickup_latitude,
-        ride_data.pickup_longitude,
-        ride_data.destination_latitude,
-        ride_data.destination_longitude,
+    ride_data.pickup_latitude,
+    ride_data.pickup_longitude,
+    ride_data.destination_latitude,
+    ride_data.destination_longitude,
     )
 
     # --------------------------------------------------------
     # CALCULATE ESTIMATED FARE
     # --------------------------------------------------------
 
-    estimated_fare = calculate_fare(distance_km)
+    estimated_fare = calculate_fare(
+    distance_km,
+    db,
+)
 
     # --------------------------------------------------------
     # FIND NEAREST AVAILABLE DRIVER
