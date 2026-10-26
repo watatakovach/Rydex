@@ -1,148 +1,64 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from app.auth.dependencies import get_current_user
 
-from app.auth.schemas import (
-    TokenResponse,
-    UserRegister,
-    UserResponse,
-)
-from app.auth.security import (
-    create_access_token,
-    hash_password,
-    verify_password,
-)
+from app.auth.dependencies import get_current_user
+from app.auth.schemas import TokenResponse, UserRegister, UserResponse
+from app.auth.security import create_access_token, hash_password, verify_password
 from app.database.connection import get_db
 from app.users.models import User
 
 
-router = APIRouter(
-    prefix="/auth",
-    tags=["Authentication"],
-)
+router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post(
-    "/register",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def register_user(
-    user_data: UserRegister,
-    db: Session = Depends(get_db),
-):
-    # Check if phone number already exists
-    existing_phone = (
-        db.query(User)
-        .filter(
-            User.phone_number == user_data.phone_number
-        )
-        .first()
-    )
+@router.post("/register", response_model=UserResponse, status_code=201)
+def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.phone_number == user_data.phone_number).first():
+        raise HTTPException(400, "Phone number is already registered")
 
-    if existing_phone:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Phone number is already registered",
-        )
+    if user_data.email and db.query(User).filter(User.email == user_data.email).first():
+        raise HTTPException(400, "Email is already registered")
 
-    # Check if email already exists
-    if user_data.email:
-        existing_email = (
-            db.query(User)
-            .filter(
-                User.email == user_data.email
-            )
-            .first()
-        )
-
-        if existing_email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email is already registered",
-            )
-
-    # Create new passenger
-    new_user = User(
+    user = User(
         full_name=user_data.full_name,
         phone_number=user_data.phone_number,
-        email=user_data.email,
-        password_hash=hash_password(
-            user_data.password
-        ),
+        email=str(user_data.email) if user_data.email else None,
+        password_hash=hash_password(user_data.password),
         role="passenger",
         is_active=True,
     )
-
-    db.add(new_user)
+    db.add(user)
     db.commit()
-    db.refresh(new_user)
+    db.refresh(user)
+    return user
 
-    return new_user
 
-
-@router.post(
-    "/login",
-    response_model=TokenResponse,
-)
+@router.post("/login", response_model=TokenResponse)
 def login_user(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    # Allow login using either email or phone number
-    user = (
-        db.query(User)
-        .filter(
-            (User.email == form_data.username)
-            | (User.phone_number == form_data.username)
+    user = db.query(User).filter(
+        or_(
+            User.email == form_data.username,
+            User.phone_number == form_data.username,
         )
-        .first()
-    )
+    ).first()
 
-    # User not found
-    if not user:
+    if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=401,
             detail="Invalid email/phone number or password",
-            headers={
-                "WWW-Authenticate": "Bearer"
-            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Verify password
-    if not verify_password(
-        form_data.password,
-        user.password_hash,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email/phone number or password",
-            headers={
-                "WWW-Authenticate": "Bearer"
-            },
-        )
-
-    # Check if account is active
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive",
-        )
+        raise HTTPException(403, "User account is inactive")
 
-    # Create JWT access token
-    access_token = create_access_token(
-        data={
-            "sub": str(user.id),
-            "role": user.role,
-        }
-    )
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-    }
-
+    token = create_access_token({"sub": str(user.id), "role": user.role})
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @router.patch("/make-admin")
@@ -151,12 +67,6 @@ def make_current_user_admin(
     db: Session = Depends(get_db),
 ):
     current_user.role = "admin"
-
     db.commit()
     db.refresh(current_user)
-
-    return {
-        "message": "User promoted to admin",
-        "user_id": current_user.id,
-        "role": current_user.role,
-    }
+    return {"message": "User promoted to admin", "user_id": current_user.id, "role": current_user.role}

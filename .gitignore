@@ -1,25 +1,41 @@
 # Python
-backend/.venv/
-backend/__pycache__/
-backend/**/*.pyc
-backend/.env
-backend/rydex.db
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads
+backend/app/uploads/
 
 # Flutter
-**/.dart_tool/
-**/build/
-**/.flutter-plugins
-**/.flutter-plugins-dependencies
-**/.packages
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+build/
 
-# VS Code
+# IDE
 .vscode/
+.idea/
 
-# Android
-**/android/.gradle/
-
-# macOS
+# OS
 .DS_Store
-
-# Windows
 Thumbs.db

@@ -1,5 +1,8 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+from app.config import UPLOAD_DIR
 from app.database.connection import Base, engine
 from app.users.models import User
 from app.auth.router import router as auth_router
@@ -8,18 +11,19 @@ from app.drivers.router import router as drivers_router
 from app.vehicles.router import router as vehicles_router
 from app.admin.router import router as admin_router
 from app.rides.router import router as rides_router
-from fastapi.middleware.cors import CORSMiddleware
 from app.notifications.router import (
     router as websocket_router,
 )
 
 Base.metadata.create_all(bind=engine)
 
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 app = FastAPI(
     title="RYDEX API",
     description="RYDEX Ride-Hailing Platform API",
-    version="1.0.0",
+    version="0.1.0",
 )
 app.include_router(auth_router)
 app.include_router(users_router)
@@ -39,19 +43,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
-@app.get("/")
-def root():
-    return {
-        "message": "Welcome to RYDEX API",
-        "status": "online",
-        "version": "1.0.0",
-    }
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/health")
 def health_check():
     return {
-        "status": "healthy"
+        "status": "ok",
+        "service": "RYDEX API",
+        "version": "0.1.0",
     }

@@ -1,50 +1,26 @@
-from datetime import datetime
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
-class RideRequest(BaseModel):
-    pickup_latitude: float = Field(..., ge=-90, le=90)
-    pickup_longitude: float = Field(..., ge=-180, le=180)
+class RideCreate(BaseModel):
+    pickup_address: str
+    destination_address: str
+    pickup_latitude: float | None = None
+    pickup_longitude: float | None = None
+    destination_latitude: float | None = None
+    destination_longitude: float | None = None
 
-    destination_latitude: float = Field(
-        ...,
-        ge=-90,
-        le=90,
-    )
 
-    destination_longitude: float = Field(
-        ...,
-        ge=-180,
-        le=180,
-    )
+class RideStatusUpdate(BaseModel):
+    status: str
 
 
 class RideResponse(BaseModel):
     id: int
     passenger_id: int
     driver_id: int | None
-    pickup_latitude: float
-    pickup_longitude: float
-    destination_latitude: float
-    destination_longitude: float
-    status: str
-    estimated_fare: float | None
-    final_fare: float | None
-    requested_at: datetime
-    completed_at: datetime | None
-
-    class Config:
-        from_attributes = True
-
-class RideAcceptResponse(BaseModel):
-    id: int
-    passenger_id: int
-    driver_id: int
+    pickup_address: str
+    destination_address: str
+    fare: float
     status: str
 
-    class Config:
-        from_attributes = True
-
-class RideStatusUpdate(BaseModel):
-    status: str
+    model_config = {"from_attributes": True}

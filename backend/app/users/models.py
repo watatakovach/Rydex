@@ -15,8 +15,4 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), default="passenger", nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        nullable=False,
-    )
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

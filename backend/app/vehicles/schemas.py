@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -20,3 +22,17 @@ class VehicleResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class VehicleImageResponse(BaseModel):
+    id: int
+    vehicle_id: int
+    url: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleWithImagesResponse(VehicleResponse):
+    images: list[VehicleImageResponse] = []
